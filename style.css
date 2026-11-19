@@ -232,3 +232,17 @@
 .assignment-candidates { display: grid; gap: 10px; }
 .assignment-candidate { border: 1px solid #dac6cb; border-radius: 10px; padding: 12px; overflow-wrap: anywhere; }
 .assignment-candidate p { margin: 8px 0; }
+
+/* Отметка исполнителя не меняется при переносе задачи. */
+.task-work-status { display: inline-flex; align-items: center; padding: 3px 7px; border: 0; border-radius: 4px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 100%; overflow-wrap: anywhere; }
+.task > .task-work-status { margin: 0 14px 8px; }
+#taskDialogContent > .task-work-status { margin-bottom: 8px; }
+.task-work-status--none { background: #f1f2f4; color: #596579; }
+.task-work-status--accepted { background: #eaf2ff; color: #1766c2; }
+.task-work-status--clarification { background: #fff4dc; color: #a86500; }
+.task-work-status--impossible { background: #fdebed; color: #c52e4b; }
+.task-work-status--fix { background: #f3eafa; color: #8742bd; }
+.task-work-status--completed { background: #e8f4ec; color: #238049; }
+.task-work-comment { border: 1px solid var(--rose-border); background: #fff8f7; border-radius: 10px; padding: 12px; margin-bottom: 14px; }
+.task-work-comment p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-work-comment-editor[hidden] { display: none; }

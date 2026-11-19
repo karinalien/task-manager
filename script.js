@@ -221,6 +221,14 @@ async function saveConfirmedTask(task, body) {
     finally { busy = false; updateControls(); }
 }
 
+function renderWorkStatus(task) {
+    const status = Object.hasOwn(TaskWorkStatuses, task.workStatus) ? task.workStatus : "none";
+    const label = TaskWorkStatuses[status].label;
+    const badge = element("span", `task-work-status task-work-status--${status}`, label);
+    badge.setAttribute("aria-label", `Отметка исполнителя: ${label}`);
+    return badge;
+}
+
 function renderBoard() {
     for (const column of columns) byId(column).replaceChildren();
     const query = byId("taskSearch").value.trim().toLocaleLowerCase("ru-RU");
@@ -239,18 +247,8 @@ function renderBoard() {
         });
         card.appendChild(openButton);
         card.appendChild(renderTaskAssignee(task));
-        const buttons = element("div", "task-buttons");
+        if (Object.hasOwn(TaskWorkStatuses, task.workStatus) && task.workStatus !== "none") card.appendChild(renderWorkStatus(task));
         const taskColumn = columns.includes(task.column) ? task.column : "todo";
-        const index = columns.indexOf(taskColumn);
-        for (const [text, direction, label] of [["←", -1, "Переместить влево"], ["→", 1, "Переместить вправо"]]) {
-            const button = element("button", "", text);
-            button.title = label;
-            button.setAttribute("aria-label", label);
-            button.disabled = busy || index + direction < 0 || index + direction >= columns.length;
-            button.addEventListener("click", () => updateTask(task, "column", { column: columns[index + direction] }));
-            buttons.appendChild(button);
-        }
-        card.appendChild(buttons);
         byId(taskColumn).appendChild(card);
     }
     for (const column of columns) byId(`${column}Count`).textContent = String(byId(column).children.length);
@@ -266,6 +264,13 @@ function renderTaskDetails() {
     content.replaceChildren();
     const interviewing = Boolean(task.grillingVersion && !task.branch);
     byId("taskDialog").className = interviewing ? "interview-dialog" : "";
+    content.appendChild(renderWorkStatus(task));
+    if (!editingConfirmed && TaskWorkStatuses[task.workStatus]?.comment && task.workStatusComment) {
+        const comment = element("section", "task-work-comment");
+        comment.appendChild(element("strong", "", "Комментарий к отметке"));
+        comment.appendChild(element("p", "", task.workStatusComment));
+        content.appendChild(comment);
+    }
     if (interviewing) {
         renderInterview(task, content);
         return;
@@ -324,7 +329,7 @@ function renderTaskDetails() {
         const edit = element("button", "", "Редактировать карточку");
         edit.disabled = busy || currentProject()?.archived === true;
         edit.addEventListener("click", () => {
-            confirmedEditorDrafts.set(task.id, { title: task.title, description: task.description || "", assigneeId: task.assigneeId || "", estimatedHours: task.estimatedHours ?? null, requiredGroups: task.requiredGroups || [], requiredTechnologies: task.requiredTechnologies || [], expectedRevision: task.editRevision || 0 });
+            confirmedEditorDrafts.set(task.id, { title: task.title, description: task.description || "", assigneeId: task.assigneeId || "", workStatus: task.workStatus || "none", workStatusComment: task.workStatusComment || "", estimatedHours: task.estimatedHours ?? null, requiredGroups: task.requiredGroups || [], requiredTechnologies: task.requiredTechnologies || [], expectedRevision: task.editRevision || 0 });
             taskActionErrors.delete(task.id);
             renderTaskDetails();
         });
@@ -530,6 +535,38 @@ function renderConfirmedEditor(task, container) {
     assigneeLabel.appendChild(assignee);
     container.appendChild(assigneeLabel);
 
+    const workStatus = element("select");
+    for (const [value, info] of Object.entries(TaskWorkStatuses)) {
+        const option = element("option", "", info.label);
+        option.value = value;
+        workStatus.appendChild(option);
+    }
+    workStatus.value = saved.workStatus;
+    workStatus.disabled = busy;
+    const statusLabel = element("label", "draft-field", "Отметка исполнителя");
+    statusLabel.appendChild(workStatus);
+    container.appendChild(statusLabel);
+    const statusComment = element("textarea");
+    statusComment.value = saved.workStatusComment;
+    statusComment.maxLength = 1000;
+    statusComment.rows = 3;
+    const commentLabel = element("label", "draft-field task-work-comment-editor", "Комментарий к отметке *");
+    commentLabel.appendChild(statusComment);
+    container.appendChild(commentLabel);
+    function updateCommentField() {
+        const required = TaskWorkStatuses[saved.workStatus]?.comment === true;
+        commentLabel.hidden = !required;
+        statusComment.required = required;
+        statusComment.disabled = busy || !required;
+    }
+    workStatus.addEventListener("change", () => {
+        if (saved.workStatus !== workStatus.value) { saved.workStatusComment = ""; statusComment.value = ""; }
+        saved.workStatus = workStatus.value;
+        updateCommentField();
+    });
+    statusComment.addEventListener("input", () => { saved.workStatusComment = statusComment.value; });
+    updateCommentField();
+
     const hours = element("input");
     hours.type = "number";
     hours.min = "0.5";
@@ -627,7 +664,16 @@ function renderConfirmedEditor(task, container) {
             error.textContent = "Заполните название и описание карточки.";
             return;
         }
+        if (TaskWorkStatuses[saved.workStatus]?.comment && !saved.workStatusComment.trim()) {
+            error.textContent = "Добавьте комментарий к выбранной отметке.";
+            statusComment.focus();
+            return;
+        }
         const patch = { title: title.value, description: description.value, expectedRevision: saved.expectedRevision };
+        if (saved.workStatus !== (task.workStatus || "none") || saved.workStatusComment !== (task.workStatusComment || "")) {
+            patch.workStatus = saved.workStatus;
+            patch.workStatusComment = saved.workStatusComment;
+        }
         const assigneeId = assignee.value || null;
         if (assigneeId !== (task.assigneeId ?? null) || saved.assignmentMode === "recommended") patch.assigneeId = assigneeId;
         if (saved.assignmentMode === "recommended") patch.assignmentMode = "recommended";

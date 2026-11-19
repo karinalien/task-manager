@@ -24,6 +24,7 @@ const assets = new Map([
     ["/style.css", ["style.css", "text/css; charset=utf-8"]]
 ]);
 for (const route of ["/team", "/events", "/profile", "/login"]) assets.set(route, ["public/index.html", "text/html; charset=utf-8"]);
+assets.set("/js/task-work-status.js", ["public/js/task-work-status.js", "text/javascript; charset=utf-8"]);
 assets.set("/js/employee-options.js", ["public/js/employee-options.js", "text/javascript; charset=utf-8"]);
 assets.set("/js/app.js", ["public/js/app.js", "text/javascript; charset=utf-8"]);
 assets.set("/css/style.css", ["public/css/style.css", "text/css; charset=utf-8"]);
