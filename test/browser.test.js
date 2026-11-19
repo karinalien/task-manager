@@ -33,7 +33,7 @@ function browser(handler, draft = null, page = "index", search = "") {
         localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
         sessionStorage: { getItem: (key) => session.get(key) ?? null, setItem: (key, value) => session.set(key, value) },
         setInterval: (callback) => intervals.push(callback),
-        EmployeeOptions: require("../public/js/employee-options"), crypto: { randomUUID }, AbortSignal, URLSearchParams, location: { search },
+        TaskWorkStatuses: require("../public/js/task-work-status"), EmployeeOptions: require("../public/js/employee-options"), crypto: { randomUUID }, AbortSignal, URLSearchParams, location: { search },
         fetch: async (url, options) => {
             calls.push({ url, options });
             let result;
@@ -232,7 +232,7 @@ test("board hides task details until opening the accessible task dialog", async 
     const f = browser(async () => ({ tasks: [item] }));
     await tick();
     const card = f.nodes.todo.children[0];
-    assert.equal(card.children.length, 3);
+    assert.equal(card.children.length, 2);
     assert.equal(card.children[1].className, "task-assignee");
     assert.equal(f.nodes.taskDialog.open, false);
     assert.equal(f.nodes.connectionStatus.textContent, "");
@@ -240,7 +240,7 @@ test("board hides task details until opening the accessible task dialog", async 
     assert.equal(f.nodes.taskDialog.open, true);
     assert.equal(f.nodes.taskDialogTitle.textContent, item.title);
     const content = f.nodes.taskDialogContent;
-    assert.equal(content.children[0].textContent, item.repository);
+    assert.equal(content.children.find((node) => node.className === "task-status").textContent, item.repository);
     assert.equal(content.children.find((node) => node.className === "task-branch").children[0].href, item.branchUrl);
     const details = content.children.find((node) => node.className === "task-details");
     assert.ok(details.children.some((node) => node.tag === "ul" && node.children[0].textContent === "<b>Критерий</b>"));
@@ -614,4 +614,88 @@ test("planning preview arriving after requirements change cannot populate stale 
     nodes = descendants(f.nodes.taskDialogContent);
     assert.equal(nodes.some((node) => node.textContent === "Выбрать исполнителя"), false);
     assert.equal(nodes.find((node) => node.textContent === "Подобрать исполнителя").disabled, false);
+});
+
+
+
+test("work marks appear on kanban and details; moving never changes the mark or exposes its comment on board", async () => {
+    let current = task({ workStatus: "impossible", workStatusComment: "<script>Причина</script>" });
+    const f = browser(async (url, options) => {
+        if (url === "/api/employees") return [];
+        if (options.method === "POST") { current = { ...current, column: JSON.parse(options.body).column }; return { task: current }; }
+        return { tasks: [current] };
+    });
+    await tick();
+    f.nodes.todo.children[0].children[0].listeners.click();
+    for (const column of ["todo", "progress", "done"]) {
+        if (column !== "todo") {
+            f.nodes[column].listeners.drop({ preventDefault() {}, dataTransfer: { getData: () => current.id } });
+            await tick();
+        }
+        assert.ok(descendants(f.nodes[column]).some((node) => node.className === "task-work-status task-work-status--impossible" && node.textContent === "Приостановлено"));
+        assert.ok(!descendants(f.nodes[column]).some((node) => node.textContent === current.workStatusComment));
+        assert.ok(descendants(f.nodes.taskDialogContent).some((node) => node.textContent === current.workStatusComment));
+    }
+});
+
+test("work mark editor requires a reason, retains failed input and resets comment on a different mark", async () => {
+    let mutation;
+    const f = browser(async (url, options) => {
+        if (url === "/api/employees") return [];
+        if (options.method === "PATCH") { mutation = JSON.parse(options.body); return { __status: 409, error: { code: "task_changed", message: "Карточка изменилась" } }; }
+        return { tasks: [task()] };
+    });
+    await tick();
+    f.nodes.todo.children[0].children[0].listeners.click();
+    descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
+    let nodes = descendants(f.nodes.taskDialogContent);
+    const label = nodes.find((node) => node.tag === "label" && node.textContent === "Комментарий к отметке *");
+    const comment = label.children[0];
+    const select = nodes.find((node) => node.tag === "label" && node.textContent === "Отметка исполнителя").children[0];
+    const save = nodes.find((node) => node.textContent === "Сохранить изменения");
+    assert.equal(label.hidden, true);
+    select.value = "clarification";
+    select.listeners.change();
+    assert.equal(label.hidden, false);
+    assert.equal(comment.required, true);
+    await save.listeners.click();
+    assert.equal(mutation, undefined);
+    comment.value = "Уточните формат ответа";
+    comment.listeners.input();
+    await save.listeners.click();
+    assert.equal(mutation.workStatus, "clarification");
+    assert.equal(mutation.workStatusComment, "Уточните формат ответа");
+    nodes = descendants(f.nodes.taskDialogContent);
+    assert.equal(nodes.find((node) => node.tag === "label" && node.textContent === "Комментарий к отметке *").children[0].value, "Уточните формат ответа");
+    const newSelect = nodes.find((node) => node.tag === "label" && node.textContent === "Отметка исполнителя").children[0];
+    newSelect.value = "completed";
+    newSelect.listeners.change();
+    assert.equal(nodes.find((node) => node.tag === "label" && node.textContent === "Комментарий к отметке *").hidden, true);
+    assert.equal(nodes.find((node) => node.tag === "label" && node.textContent === "Комментарий к отметке *").children[0].value, "");
+});
+
+
+test("kanban hides an empty work mark but editor still permits clearing a mark", async () => {
+    let current = task();
+    const f = browser(async (url) => url === "/api/employees" ? [] : { tasks: [current] });
+    await tick();
+    assert.equal(descendants(f.nodes.todo).some((node) => node.className?.includes("task-work-status")), false);
+    current = task({ workStatus: "none" });
+    await vm.runInContext("refreshBoard()", f.context);
+    assert.equal(descendants(f.nodes.todo).some((node) => node.textContent === "Без отметки"), false);
+    f.nodes.todo.children[0].children[0].listeners.click();
+    assert.ok(descendants(f.nodes.taskDialogContent).some((node) => node.textContent === "Без отметки"));
+    descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
+    const select = descendants(f.nodes.taskDialogContent).find((node) => node.tag === "label" && node.textContent === "Отметка исполнителя").children[0];
+    assert.ok(select.children.some((option) => option.value === "none" && option.textContent === "Без отметки"));
+});
+
+
+test("kanban cards have no transfer arrows and retain drag support", async () => {
+    const f = browser(async (url) => url === "/api/employees" ? [] : { tasks: [task()] });
+    await tick();
+    const card = f.nodes.todo.children[0];
+    assert.equal(card.draggable, true);
+    assert.equal(typeof card.listeners.dragstart, "function");
+    assert.equal(descendants(card).some((node) => ["←", "→"].includes(node.textContent) || node.className === "task-buttons"), false);
 });
