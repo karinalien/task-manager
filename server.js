@@ -13,6 +13,7 @@ const { readJson, readRaw } = require("./lib/http-json");
 const { createAuth } = require("./lib/auth");
 const { openDatabase } = require("./lib/database");
 const { Workspace } = require("./lib/workspace");
+const { workloads, assignmentPreview, validateRecommended } = require("./lib/planning");
 
 const assets = new Map([
     ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -119,6 +120,10 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
                 });
                 return;
             }
+            if (request.method === "GET" && route === "/api/workloads") {
+                json(response, 200, { workloads: workloads(workspace.employees(), store.list()) });
+                return;
+            }
             if (request.method === "GET" && route === "/api/employees") {
                 json(response, 200, workspace.employees());
                 return;
@@ -183,10 +188,11 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
             const clarify = route.match(/^\/api\/tasks\/([a-f\d-]{36})\/clarify$/i);
             const retry = route.match(/^\/api\/tasks\/([a-f\d-]{36})\/branch\/retry$/i);
             const move = route.match(/^\/api\/tasks\/([a-f\d-]{36})\/column$/i);
+            const planningPreview = route.match(/^\/api\/tasks\/([a-f\d-]{36})\/assignment-preview$/i);
             const taskUpdate = route.match(/^\/api\/tasks\/([a-f\d-]{36})$/i);
             const projectMutation = request.method === "POST" && ["/api/projects", "/api/github/repositories/resolve"].includes(route);
             const employeeMutation = (request.method === "POST" && route === "/api/employees") || (request.method === "PATCH" && employee);
-            if (employeeMutation || (request.method === "POST" && (route === "/api/tasks" || confirm || clarify || retry || move || projectMutation)) ||
+            if ((request.method === "POST" && planningPreview) || employeeMutation || (request.method === "POST" && (route === "/api/tasks" || confirm || clarify || retry || move || projectMutation)) ||
                 (request.method === "PATCH" && (projectUpdate || taskUpdate))) {
                 if ((request.headers.origin && request.headers.origin !== origin) ||
                     ["cross-site", "same-site"].includes(request.headers["sec-fetch-site"])) {
@@ -197,6 +203,15 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
                 }
                 const body = await readJson(request, employeeMutation ? 196_608 : 16_384);
                 if (!body || typeof body !== "object" || Array.isArray(body)) throw new AppError(400, "body", "Ожидался JSON-объект.");
+                if (planningPreview) {
+                    const task = tasks.find(planningPreview[1]);
+                    if (!body.projectId || task.projectId !== body.projectId) throw new AppError(400, "task_project", "Задача не принадлежит выбранному проекту.");
+                    const project = projects.find(body.projectId);
+                    if (project.archived || (!task.branch && !task.confirmedAt)) throw new AppError(409, "task_planning", "Подбор доступен подтверждённым задачам активного проекта.");
+                    if (body.expectedRevision !== (task.editRevision || 0)) throw new AppError(409, "task_changed", "Карточка изменилась. Загрузите свежую версию.");
+                    json(response, 200, assignmentPreview(task, body, workspace.employees(), store.list()));
+                    return;
+                }
                 if (employeeMutation) {
                     if (request.method === "POST") json(response, 201, { employee: workspace.createEmployee(body) });
                     else json(response, 200, { employee: workspace.updateEmployee(employee[1], body) });
@@ -214,7 +229,7 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
                         if (typeof body.assigneeId !== "string") throw new AppError(400, "task_assignee", "Укажите исполнителя из списка сотрудников или снимите назначение.");
                         workspace.employee(body.assigneeId);
                     }
-                    task = await tasks.update(taskUpdate[1], body);
+                    task = await tasks.update(taskUpdate[1], body, { validateAssignment: (task) => { if (projects.find(task.projectId).archived) throw new AppError(409, "project_archived", "Проект отключён."); validateRecommended(task, workspace.employees(), store.list()); } });
                 } else if (clarify) task = await tasks.clarify(clarify[1], body);
                 else if (confirm) task = await tasks.confirm(confirm[1], body);
                 else if (retry) task = await tasks.retry(retry[1]);
@@ -223,7 +238,8 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
                     if (body.assigneeId != null) workspace.employee(body.assigneeId);
                     task = await tasks.create(body);
                 }
-                json(response, 200, { task });
+                const assignmentWarnings = taskUpdate && task.assigneeId ? assignmentPreview(task, {}, workspace.employees(), store.list()).candidates.find((candidate) => candidate.employeeId === task.assigneeId)?.reasons || [] : [];
+                json(response, 200, { task, ...(assignmentWarnings.length ? { assignmentWarnings } : {}) });
                 return;
             }
             throw new AppError(request.method === "GET" ? 404 : 405, "route", "Ресурс или метод недоступен.");

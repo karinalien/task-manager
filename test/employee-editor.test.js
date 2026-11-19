@@ -211,3 +211,14 @@ test("avatar upload is normalized before submit and is not sent until the employ
     await editor.submit();
     assert.deepEqual(JSON.parse(f.calls.find((call) => call.method === "PATCH").body), { avatar_upload: { contentType: "image/jpeg", data: "/9j/4AAC/9k=" } });
 });
+
+test("team shows global planned hours, overload and unknown estimates without presenting them as free time", async () => {
+    const f = ui(async (url) => url === "/api/workloads" ? { workloads: [{ employeeId: employee.id, assignedHours: 6, unknownTasks: 2 }] } : [employee]);
+    await tick();
+    const grid = f.ids.content.children.at(-1);
+    const text = grid.children[0].querySelectorAll("p").map((node) => node.textContent).join(" ");
+    assert.match(text, /6 \/ 4 ч/);
+    assert.match(text, /Перегрузка: 2 ч/);
+    assert.match(text, /Без оценки: 2 задач/);
+    assert.match(text, /свободно 0 ч/);
+});

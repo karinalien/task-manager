@@ -222,3 +222,13 @@
     .interview-footer { gap: 6px; }
     .interview-footer button { padding: 8px !important; }
 }
+
+/* Планирование подтверждённой карточки */
+.task-planning { display: grid; gap: 12px; margin: 16px 0; }
+.planning-choices { min-width: 0; max-height: 180px; overflow-y: auto; border: 1px solid #dac6cb; border-radius: 10px; padding: 12px; }
+.planning-choices legend { font-weight: 600; }
+.planning-choice { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; }
+.planning-choice input { width: 18px; min-height: 18px; margin: 0; flex-shrink: 0; }
+.assignment-candidates { display: grid; gap: 10px; }
+.assignment-candidate { border: 1px solid #dac6cb; border-radius: 10px; padding: 12px; overflow-wrap: anywhere; }
+.assignment-candidate p { margin: 8px 0; }

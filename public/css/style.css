@@ -65,3 +65,5 @@ body{background:var(--bg-main);font-family:'Be Vietnam Pro',system-ui,sans-serif
 .employee-avatar-preview { display: flex; align-items: center; gap: 16px; }
 .employee-avatar-preview img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
 .employee-editor input[type=file] { max-width: 100%; font-size: 13px; }
+
+.employee-load { font-size: 14px; font-weight: 600; line-height: 1.5; }
