@@ -208,11 +208,11 @@ async function saveConfirmedTask(task, body) {
     boardVersion++;
     updateControls();
     try {
-        const { task: result } = await api(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify(body) });
+        const { task: result, assignmentWarnings = [] } = await api(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify(body) });
         taskActionErrors.delete(task.id);
         confirmedEditorDrafts.delete(task.id);
         if (activeProjectId === task.projectId) boardTasks = boardTasks.map((item) => item.id === task.id ? result : item);
-        feedback.textContent = `${task.repository}: изменения сохранены.`;
+        feedback.textContent = `${task.repository}: изменения сохранены.${assignmentWarnings.length ? ` Внимание: ${assignmentWarnings.join(" ")}` : ""}`;
     } catch (error) {
         if (error.code === "task_changed" && confirmedEditorDrafts.has(task.id)) confirmedEditorDrafts.get(task.id).conflict = true;
         taskActionErrors.set(task.id, error.message);
@@ -272,6 +272,12 @@ function renderTaskDetails() {
     }
     content.appendChild(element("div", "task-status", task.repository));
     content.appendChild(element("p", "", `Тип задачи: ${Object.hasOwn(taskTypeLabels, task.type) ? taskTypeLabels[task.type] : "Не указан"}`));
+    if (!editingConfirmed && (task.branch || task.confirmedAt)) {
+        content.appendChild(element("p", "", `Плановая оценка: ${task.estimatedHours == null ? "не указана" : `${task.estimatedHours} ч.`}`));
+        const groupNames = (task.requiredGroups || []).map((id) => EmployeeOptions.groups.find((group) => group.id === id)?.name || id);
+        content.appendChild(element("p", "", `Компетенции: ${groupNames.join(", ") || "не указаны"}`));
+        if (task.requiredTechnologies?.length) content.appendChild(element("p", "", `Технологии: ${task.requiredTechnologies.join(", ")}`));
+    }
     if (!editingConfirmed) content.appendChild(element("p", "", `Исполнитель: ${task.assigneeId ? employees.find((employee) => employee.id === task.assigneeId)?.name || task.assigneeId : "Не назначен"}`));
     const branch = element("div", "task-branch");
     if (task.state === "branch_created" && task.branchUrl?.startsWith("https://github.com/")) {
@@ -318,7 +324,7 @@ function renderTaskDetails() {
         const edit = element("button", "", "Редактировать карточку");
         edit.disabled = busy || currentProject()?.archived === true;
         edit.addEventListener("click", () => {
-            confirmedEditorDrafts.set(task.id, { title: task.title, description: task.description || "", assigneeId: task.assigneeId || "", expectedRevision: task.editRevision || 0 });
+            confirmedEditorDrafts.set(task.id, { title: task.title, description: task.description || "", assigneeId: task.assigneeId || "", estimatedHours: task.estimatedHours ?? null, requiredGroups: task.requiredGroups || [], requiredTechnologies: task.requiredTechnologies || [], expectedRevision: task.editRevision || 0 });
             taskActionErrors.delete(task.id);
             renderTaskDetails();
         });
@@ -519,10 +525,95 @@ function renderConfirmedEditor(task, container) {
     }
     assignee.value = saved.assigneeId;
     assignee.disabled = busy;
-    assignee.addEventListener("change", () => { saved.assigneeId = assignee.value; });
+    assignee.addEventListener("change", () => { saved.assigneeId = assignee.value; saved.assignmentMode = undefined; });
     const assigneeLabel = element("label", "draft-field", "Исполнитель");
     assigneeLabel.appendChild(assignee);
     container.appendChild(assigneeLabel);
+
+    const hours = element("input");
+    hours.type = "number";
+    hours.min = "0.5";
+    hours.max = "10000";
+    hours.step = "0.5";
+    hours.value = saved.estimatedHours ?? "";
+    hours.disabled = busy;
+    const hoursLabel = element("label", "draft-field", "Плановая оценка, ч.");
+    hoursLabel.appendChild(hours);
+    container.appendChild(hoursLabel);
+    const planningBox = element("section", "task-planning");
+    function planningChoices(title, entries, field) {
+        const fieldset = element("fieldset", "planning-choices");
+        fieldset.appendChild(element("legend", "", title));
+        const choices = [];
+        for (const item of entries) {
+            const label = element("label", "planning-choice");
+            const input = element("input");
+            input.type = "checkbox";
+            input.value = item.value;
+            input.checked = saved[field].includes(item.value);
+            input.disabled = busy;
+            choices.push(input);
+            input.addEventListener("change", () => {
+                saved[field] = choices.filter((choice) => choice.checked).map((choice) => choice.value);
+                invalidateRecommendation();
+            });
+            label.appendChild(input);
+            label.appendChild(element("span", "", item.label));
+            fieldset.appendChild(label);
+        }
+        planningBox.appendChild(fieldset);
+    }
+    planningChoices("Требуемые компетенции", EmployeeOptions.groups.map((group) => ({ value: group.id, label: group.name })), "requiredGroups");
+    planningChoices("Желательные технологии", EmployeeOptions.technologies.flatMap(([, entries]) => entries.map((name) => ({ value: name, label: name }))), "requiredTechnologies");
+    container.appendChild(planningBox);
+    const candidates = element("div", "assignment-candidates");
+    const recommend = element("button", "", "Подобрать исполнителя");
+    recommend.type = "button";
+    recommend.disabled = busy || saved.conflict || currentProject()?.archived === true;
+    const planningStatus = element("p", "");
+    planningStatus.setAttribute("role", "status");
+    let previewSequence = 0;
+    function invalidateRecommendation() {
+        previewSequence++;
+        candidates.replaceChildren();
+        planningStatus.textContent = saved.assignmentMode === "recommended" ? "Требования изменены. Выбранный исполнитель будет проверен повторно при сохранении." : "";
+    }
+    hours.addEventListener("input", () => { saved.estimatedHours = hours.value === "" ? null : Number(hours.value); invalidateRecommendation(); });
+    recommend.addEventListener("click", async () => {
+        const sequence = ++previewSequence;
+        recommend.disabled = true;
+        candidates.replaceChildren();
+        planningStatus.textContent = "Подбираем исполнителей…";
+        try {
+            const preview = await api(`/api/tasks/${encodeURIComponent(task.id)}/assignment-preview`, { method: "POST", body: JSON.stringify({ projectId: task.projectId, expectedRevision: saved.expectedRevision, estimatedHours: saved.estimatedHours, requiredGroups: saved.requiredGroups, requiredTechnologies: saved.requiredTechnologies }) });
+            if (sequence !== previewSequence || confirmedEditorDrafts.get(task.id) !== saved) return;
+            planningStatus.textContent = preview.recommendedId ? "Выберите исполнителя и сохраните карточку. Нагрузка будет проверена повторно." : "Подходящих исполнителей нет. Проверьте оценку, компетенции и доступные часы.";
+            for (const candidate of preview.candidates) {
+                const row = element("div", "assignment-candidate");
+                row.appendChild(element("strong", "", candidate.name));
+                row.appendChild(element("p", "", `Свободно: ${candidate.availableHours} ч. · после назначения: ${candidate.projectedHours} / ${candidate.capacity} ч. · совпадений технологий: ${candidate.matchingTechnologies.length}`));
+                if (candidate.reasons.length) row.appendChild(element("p", "task-error", candidate.reasons.join(" ")));
+                if (candidate.eligible) {
+                    const choose = element("button", "", "Выбрать исполнителя");
+                    choose.type = "button";
+                    choose.disabled = busy;
+                    choose.addEventListener("click", () => {
+                        if (sequence !== previewSequence || confirmedEditorDrafts.get(task.id) !== saved) return;
+                        assignee.value = candidate.employeeId;
+                        saved.assigneeId = candidate.employeeId;
+                        saved.assignmentMode = "recommended";
+                        planningStatus.textContent = `Выбран: ${candidate.name}. Нажмите «Сохранить изменения».`;
+                    });
+                    row.appendChild(choose);
+                }
+                candidates.appendChild(row);
+            }
+        } catch (cause) { if (sequence === previewSequence) planningStatus.textContent = cause.message; }
+        finally { recommend.disabled = busy || saved.conflict || currentProject()?.archived === true; }
+    });
+    container.appendChild(recommend);
+    container.appendChild(planningStatus);
+    container.appendChild(candidates);
 
     const error = element("p", "task-error");
     error.setAttribute("role", "alert");
@@ -538,7 +629,15 @@ function renderConfirmedEditor(task, container) {
         }
         const patch = { title: title.value, description: description.value, expectedRevision: saved.expectedRevision };
         const assigneeId = assignee.value || null;
-        if (assigneeId !== (task.assigneeId ?? null)) patch.assigneeId = assigneeId;
+        if (assigneeId !== (task.assigneeId ?? null) || saved.assignmentMode === "recommended") patch.assigneeId = assigneeId;
+        if (saved.assignmentMode === "recommended") patch.assignmentMode = "recommended";
+        for (const [field, value, previous] of [["estimatedHours", saved.estimatedHours, task.estimatedHours ?? null], ["requiredGroups", saved.requiredGroups, task.requiredGroups || []], ["requiredTechnologies", saved.requiredTechnologies, task.requiredTechnologies || []]]) {
+            if (JSON.stringify(value) !== JSON.stringify(previous)) patch[field] = value;
+        }
+        if (saved.estimatedHours !== null && (!Number.isFinite(saved.estimatedHours) || saved.estimatedHours < 0.5 || saved.estimatedHours > 10000 || !Number.isInteger(saved.estimatedHours * 2))) {
+            error.textContent = "Укажите оценку от 0,5 до 10000 часов с шагом 0,5.";
+            return;
+        }
         return saveConfirmedTask(task, patch);
     });
     const cancel = element("button", "", "Отмена");

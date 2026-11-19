@@ -197,7 +197,7 @@ function employeeEditor(employee, onSave, opener) {
     const groups = choiceList(form, "Группы компетенций", EmployeeOptions.groups.map((group) => ({ value: group.id, label: group.name })), employee?.groups);
     form.append(node("p", "Группы — основа будущего подбора исполнителя. Технологии помогут уточнить выбор; автоматическое распределение пока не подключено.", "note"));
     const stack = choiceList(form, "Технологии и навыки", EmployeeOptions.technologies.flatMap(([section, items]) => items.map((title) => ({ value: title, label: title, section }))), employee?.stack, { searchable: true });
-    const capacity = field("capacity", "Доступно часов за спринт", "input", "0 — доступных часов пока нет.");
+    const capacity = field("capacity", "Доступно часов на текущий период", "input", "0 — доступных часов пока нет.");
     capacity.type = "number";
     capacity.min = "0";
     capacity.max = String(Number.MAX_SAFE_INTEGER);
@@ -338,16 +338,18 @@ function employeeEditor(employee, onSave, opener) {
 async function team() {
     const employees = await api("/api/employees");
     const tasks = projectId ? (await api(`/api/tasks?projectId=${encodeURIComponent(projectId)}`)).tasks : [];
+    const loadResponse = await api("/api/workloads");
+    const loadMap = new Map((loadResponse.workloads || []).map((load) => [load.employeeId, load]));
     const toolbar = node("div", undefined, "team-toolbar");
     const add = node("button", "+ Добавить сотрудника", "btn primary");
     add.type = "button";
-    toolbar.append(node("p", "Общая команда · задачи показаны для выбранного проекта", "note"), add);
+    toolbar.append(node("p", "Загрузка — по всем проектам, без Done и черновиков", "note"), add);
     const notice = node("p", "", "note");
     notice.setAttribute("role", "status");
     const grid = node("div", undefined, "team");
     function saved(employee) {
         const index = employees.findIndex((item) => item.id === employee.id);
-        if (index < 0) employees.push(employee);
+        if (index < 0) { employees.push(employee); loadMap.set(employee.id, { assignedHours: 0, unknownTasks: 0 }); }
         else employees[index] = employee;
         render();
         notice.textContent = index < 0 ? "Сотрудник добавлен." : "Изменения сохранены.";
@@ -358,7 +360,14 @@ async function team() {
             const count = tasks.filter((task) => task.assigneeId === employee.id && task.column !== "done" && task.status !== "done").length;
             const card = node("article", undefined, "employee");
             card.append(person(employee), node("span", employee.executor_type === "ai_agent" ? "✦ AI Agent · выполнение пока не подключено" : "● Человек", "badge"), competencies(employee), skills(employee));
-            card.append(node("p", `Незавершённых задач: ${count}. Ёмкость: ${employee.capacity} ч. за спринт.`, "note"));
+            card.append(node("p", `Задач в выбранном проекте: ${count}.`, "note"));
+            const load = loadMap.get(employee.id);
+            if (load) {
+                const free = Math.max(0, employee.capacity - load.assignedHours);
+                card.append(node("p", `Плановая загрузка: ${load.assignedHours} / ${employee.capacity} ч. · свободно ${free} ч.`, "employee-load"));
+                if (load.assignedHours > employee.capacity) card.append(node("p", `Перегрузка: ${load.assignedHours - employee.capacity} ч.`, "employee-error"));
+                if (load.unknownTasks) card.append(node("p", `Без оценки: ${load.unknownTasks} задач. Свободные часы могут быть меньше.`, "employee-error"));
+            } else card.append(node("p", "Загрузка пока не рассчитана.", "note"));
             const edit = node("button", "Редактировать", "btn light employee-edit");
             edit.type = "button";
             edit.setAttribute("aria-label", `Редактировать: ${employee.name}`);
@@ -401,7 +410,9 @@ async function profile() {
         return;
     }
     const card = node("section", undefined, "profile");
-    card.append(person(employee), competencies(employee), skills(employee), node("p", `Ёмкость: ${employee.capacity} ч. за спринт.`));
+    card.append(person(employee), competencies(employee), skills(employee), node("p", `Ёмкость: ${employee.capacity} ч. на текущий период.`));
+    const load = (await api("/api/workloads")).workloads?.find((item) => item.employeeId === employee.id);
+    if (load) card.append(node("p", `Плановая загрузка во всех проектах: ${load.assignedHours} / ${load.capacity} ч. Без оценки: ${load.unknownTasks} задач.`));
     card.append(node("p", `В работе: ${employee.stats.in_progress}. На проверке: ${employee.stats.in_review}.`));
     content.append(card);
 }

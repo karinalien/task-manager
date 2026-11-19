@@ -33,7 +33,7 @@ function browser(handler, draft = null, page = "index", search = "") {
         localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
         sessionStorage: { getItem: (key) => session.get(key) ?? null, setItem: (key, value) => session.set(key, value) },
         setInterval: (callback) => intervals.push(callback),
-        crypto: { randomUUID }, AbortSignal, URLSearchParams, location: { search },
+        EmployeeOptions: require("../public/js/employee-options"), crypto: { randomUUID }, AbortSignal, URLSearchParams, location: { search },
         fetch: async (url, options) => {
             calls.push({ url, options });
             let result;
@@ -546,4 +546,72 @@ test("stale editor preserves typed text until explicitly loading the latest card
     assert.equal(f.nodes.taskDialogTitle.textContent, "Сохранённая правка Карины");
     descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
     assert.equal(descendants(f.nodes.taskDialogContent).find((node) => node.tag === "label" && node.textContent === "Название").children[0].value, "Сохранённая правка Карины");
+});
+
+test("planning editor previews without mutation and saves only after an explicit employee choice", async () => {
+    let mutation;
+    let previewBody;
+    const f = browser(async (url, options) => {
+        if (url === "/api/employees") return [{ id: "sofia", name: "София", role: "Backend" }];
+        if (url.endsWith("/assignment-preview")) {
+            previewBody = JSON.parse(options.body);
+            return { recommendedId: "sofia", candidates: [{ employeeId: "sofia", name: "София", availableHours: 8, projectedHours: 3, capacity: 8, matchingTechnologies: ["Node.js"], eligible: true, reasons: [] }] };
+        }
+        if (options.method === "PATCH") { mutation = JSON.parse(options.body); return { task: task({ ...mutation, assigneeId: "sofia" }) }; }
+        return { tasks: [task()] };
+    });
+    await tick();
+    f.nodes.todo.children[0].children[0].listeners.click();
+    descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
+    let nodes = descendants(f.nodes.taskDialogContent);
+    const hours = nodes.find((node) => node.tag === "label" && node.textContent === "Плановая оценка, ч.").children[0];
+    hours.value = "3";
+    hours.listeners.input();
+    const backend = nodes.find((node) => node.type === "checkbox" && node.value === "backend");
+    backend.checked = true;
+    backend.listeners.change();
+    const tech = nodes.find((node) => node.type === "checkbox" && node.value === "Node.js");
+    tech.checked = true;
+    tech.listeners.change();
+    await nodes.find((node) => node.textContent === "Подобрать исполнителя").listeners.click();
+    assert.equal(mutation, undefined);
+    assert.equal(previewBody.estimatedHours, 3);
+    assert.deepEqual(previewBody.requiredGroups, ["backend"]);
+    nodes = descendants(f.nodes.taskDialogContent);
+    nodes.find((node) => node.textContent === "Выбрать исполнителя").listeners.click();
+    assert.equal(mutation, undefined);
+    // Изменение оценки после выбора не превращает рекомендацию в ручной обход проверки.
+    hours.value = "4";
+    hours.listeners.input();
+    await nodes.find((node) => node.textContent === "Сохранить изменения").listeners.click();
+    assert.equal(mutation.assignmentMode, "recommended");
+    assert.equal(mutation.assigneeId, "sofia");
+    assert.equal(mutation.estimatedHours, 4);
+    assert.deepEqual(mutation.requiredTechnologies, ["Node.js"]);
+});
+
+test("planning preview arriving after requirements change cannot populate stale candidates", async () => {
+    let release;
+    const f = browser(async (url) => {
+        if (url === "/api/employees") return [];
+        if (url.endsWith("/assignment-preview")) {
+            await new Promise((resolve) => { release = resolve; });
+            return { recommendedId: "sofia", candidates: [{ employeeId: "sofia", name: "София", availableHours: 5, projectedHours: 3, capacity: 8, matchingTechnologies: [], eligible: true, reasons: [] }] };
+        }
+        return { tasks: [task()] };
+    });
+    await tick();
+    f.nodes.todo.children[0].children[0].listeners.click();
+    descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
+    let nodes = descendants(f.nodes.taskDialogContent);
+    const pending = nodes.find((node) => node.textContent === "Подобрать исполнителя").listeners.click();
+    await tick();
+    const hours = nodes.find((node) => node.tag === "label" && node.textContent === "Плановая оценка, ч.").children[0];
+    hours.value = "9";
+    hours.listeners.input();
+    release();
+    await pending;
+    nodes = descendants(f.nodes.taskDialogContent);
+    assert.equal(nodes.some((node) => node.textContent === "Выбрать исполнителя"), false);
+    assert.equal(nodes.find((node) => node.textContent === "Подобрать исполнителя").disabled, false);
 });
