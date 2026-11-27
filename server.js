@@ -14,6 +14,7 @@ const { createAuth } = require("./lib/auth");
 const { openDatabase } = require("./lib/database");
 const { Workspace } = require("./lib/workspace");
 const { workloads, assignmentPreview, validateRecommended } = require("./lib/planning");
+const { decompositionInput, validateDecomposition } = require("./lib/decomposition");
 
 const assets = new Map([
     ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -26,6 +27,8 @@ const assets = new Map([
 for (const route of ["/team", "/events", "/profile", "/login"]) assets.set(route, ["public/index.html", "text/html; charset=utf-8"]);
 assets.set("/js/task-work-status.js", ["public/js/task-work-status.js", "text/javascript; charset=utf-8"]);
 assets.set("/js/employee-options.js", ["public/js/employee-options.js", "text/javascript; charset=utf-8"]);
+assets.set("/js/decomposition-draft.js", ["public/js/decomposition-draft.js", "text/javascript; charset=utf-8"]);
+assets.set("/js/task-decomposition.js", ["public/js/task-decomposition.js", "text/javascript; charset=utf-8"]);
 assets.set("/js/app.js", ["public/js/app.js", "text/javascript; charset=utf-8"]);
 assets.set("/css/style.css", ["public/css/style.css", "text/css; charset=utf-8"]);
 
@@ -153,6 +156,14 @@ async function createApp({ config = loadConfig(), github = new GitHubClient(conf
                     const assigned = selected ? store.list().filter((task) => task.assigneeId === selected.id && (!projectId || task.projectId === projectId)) : [];
                     json(response, 200, selected ? { ...selected, stats: { in_progress: assigned.filter((task) => task.column === "progress").length, in_review: assigned.filter((task) => task.column === "review").length } } : { username, employee: null });
                 }
+                return;
+            }
+            if (request.method === "POST" && route === "/api/ai/decompose") {
+                if (request.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") throw new AppError(415, "content_type", "Используйте application/json.");
+                const { projectId, prompt } = decompositionInput(await readJson(request, 32768));
+                if (projects.find(projectId).archived) throw new AppError(409, "project_archived", "Выберите действующий проект.");
+                const result = validateDecomposition(await generate(prompt, { decomposition: true }), prompt);
+                json(response, 200, result);
                 return;
             }
             if (request.method === "POST" && route === "/api/ai/generate-task") {

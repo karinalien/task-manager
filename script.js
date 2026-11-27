@@ -44,13 +44,14 @@ function element(tag, className, text) {
 
 async function api(url, options = {}) {
     let response;
+    const decomposition = url === "/api/ai/decompose";
     // One draft call (configured up to 600s), optional naming (up to 45s), and repository checks.
-    const generating = options.method === "POST" && (url === "/api/tasks" || /\/(?:clarify|branch\/retry)$/.test(url));
+    const generating = options.method === "POST" && (url === "/api/tasks" || decomposition || /\/(?:clarify|branch\/retry)$/.test(url));
     try {
         response = await fetch(url, { ...options, headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(generating ? 720_000 : 240_000) });
-    } catch { throw new Error("Нет ответа сервера. Обновите доску перед повтором: операция могла завершиться."); }
+    } catch { throw new Error(decomposition ? "Нет ответа сервера. Попробуйте ещё раз." : "Нет ответа сервера. Обновите доску перед повтором: операция могла завершиться."); }
     let data;
-    try { data = await response.json(); } catch { throw new Error("Сервер вернул непонятный ответ. Обновите доску."); }
+    try { data = await response.json(); } catch { throw new Error(decomposition ? "Сервер вернул непонятный ответ. Попробуйте ещё раз." : "Сервер вернул непонятный ответ. Обновите доску."); }
     if (response.status === 401) location.assign("/login");
     if (!response.ok) {
         const error = new Error(data.error?.message || `Ошибка HTTP ${response.status}`);
@@ -102,13 +103,17 @@ function updateControls() {
     if (byId("assigneeSelect")) byId("assigneeSelect").disabled = busy || !writable;
     byId("taskTypeSelect").disabled = busy || !writable;
     byId("skipAi").disabled = busy || !writable;
+    byId("openDecomposition").disabled = busy || !project || project.archived;
     addTaskButton.textContent = busy ? "Подготавливаем карточку…" : "Подготовить карточку";
     byId("projectInfo").textContent = activeProjectId === "legacy" ? "Архив прежних задач без подтверждённой привязки. Внешние операции отключены." : project ? `${project.fullName}${project.archived ? " · проект отключён" : ""}` : "Выберите проект на странице «Проекты», чтобы начать работу.";
     renderBoard();
 }
 
 async function selectProject(id) {
-    if (activeProjectId !== id) byId("taskDialog").close();
+    if (activeProjectId !== id) {
+        byId("taskDialog").close();
+        if (byId("decompositionDialog").open) byId("decompositionDialog").close();
+    }
     activeProjectId = id;
     try { sessionStorage.setItem("task-manager.active-project.v1", id); } catch { /* Выбор сохранён только до закрытия вкладки. */ }
     boardTasks = [];
@@ -221,12 +226,23 @@ async function saveConfirmedTask(task, body) {
     finally { busy = false; updateControls(); }
 }
 
-function renderWorkStatus(task) {
-    const status = Object.hasOwn(TaskWorkStatuses, task.workStatus) ? task.workStatus : "none";
+function appendWorkStatus(container, task) {
+    const status = task.workStatus;
+    if (status === "none" || !Object.hasOwn(TaskWorkStatuses, status)) return;
     const label = TaskWorkStatuses[status].label;
     const badge = element("span", `task-work-status task-work-status--${status}`, label);
     badge.setAttribute("aria-label", `Отметка исполнителя: ${label}`);
-    return badge;
+    container.appendChild(badge);
+}
+
+function appendOriginalRequest(container, source, ...visibleTexts) {
+    const normalize = (value) => (value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ru-RU");
+    const original = normalize(source);
+    if (!original || visibleTexts.some((text) => normalize(text) === original)) return;
+    const details = element("details", "task-original-request");
+    details.appendChild(element("summary", "", "Исходный запрос"));
+    details.appendChild(element("p", "task-source", source));
+    container.appendChild(details);
 }
 
 function renderBoard() {
@@ -247,7 +263,7 @@ function renderBoard() {
         });
         card.appendChild(openButton);
         card.appendChild(renderTaskAssignee(task));
-        if (Object.hasOwn(TaskWorkStatuses, task.workStatus) && task.workStatus !== "none") card.appendChild(renderWorkStatus(task));
+        appendWorkStatus(card, task);
         const taskColumn = columns.includes(task.column) ? task.column : "todo";
         byId(taskColumn).appendChild(card);
     }
@@ -264,7 +280,7 @@ function renderTaskDetails() {
     content.replaceChildren();
     const interviewing = Boolean(task.grillingVersion && !task.branch);
     byId("taskDialog").className = interviewing ? "interview-dialog" : "";
-    content.appendChild(renderWorkStatus(task));
+    appendWorkStatus(content, task);
     if (!editingConfirmed && TaskWorkStatuses[task.workStatus]?.comment && task.workStatusComment) {
         const comment = element("section", "task-work-comment");
         comment.appendChild(element("strong", "", "Комментарий к отметке"));
@@ -297,10 +313,7 @@ function renderTaskDetails() {
     if (task.error) content.appendChild(element("div", "task-error", task.error.message));
     if (taskActionErrors.has(task.id)) content.appendChild(element("p", "task-error", taskActionErrors.get(task.id)));
     const details = element("div", "task-details");
-    if (task.input) {
-        details.appendChild(element("strong", "", "Исходные требования:"));
-        details.appendChild(element("p", "task-source", task.input));
-    }
+    appendOriginalRequest(details, task.input, task.title, task.description);
     if (task.projectId && !task.branch) {
         renderDraftEditor(task, details);
     } else if (editingConfirmed) {
@@ -364,9 +377,11 @@ function renderInterview(task, container) {
     const history = page < current;
     const asking = !history && task.state === "clarification_required";
     const final = !history && task.grillingReady && task.state === "draft_ready";
+    const { saved, persist } = interviewDraft(task);
     byId("taskDialogTitle").textContent = final ? "Проверьте информацию о задаче" : `Уточнение задачи · Раунд ${page + 1}`;
     const intro = element("div", "interview-intro");
-    intro.appendChild(element("p", "interview-task", task.title));
+    if (history || asking) intro.appendChild(element("p", "interview-task", task.title));
+    appendOriginalRequest(intro, task.input, ...(history || asking ? [task.title] : [saved.title, saved.description]));
     intro.appendChild(element("p", "interview-hint", history ? "Отправленный раунд · ответы доступны только для просмотра" : final ? "Проверьте название и описание перед созданием ветки." : "Зададим только необходимые уточнения — до 30 вопросов. Если задача ясна, перейдём к проверке карточки."));
     if (!history && current === 0 && !final) intro.appendChild(element("p", "interview-notice", "Проверьте ответы перед отправкой. После отправки раунда изменить их будет нельзя."));
     container.appendChild(intro);
@@ -374,7 +389,6 @@ function renderInterview(task, container) {
     container.appendChild(body);
     const error = element("p", "task-error interview-error", taskActionErrors.get(task.id) || task.error?.message || "");
     error.setAttribute("role", "alert");
-    const { saved, persist } = interviewDraft(task);
     const inputs = [];
     let editorAction;
     if (history || asking) {
@@ -714,6 +728,7 @@ function renderConfirmedEditor(task, container) {
 }
 
 byId("closeTaskDialog").addEventListener("click", () => byId("taskDialog").close());
+setupTaskDecomposition({ byId, api, element, currentProject, taskInput, groups: EmployeeOptions.groups });
 
 addTaskButton.addEventListener("click", addTask);
 taskInput.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addTask(); } });

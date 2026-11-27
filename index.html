@@ -53,6 +53,7 @@
                 <select id="assigneeSelect" aria-label="Исполнитель задачи"><option value="">Не назначен</option></select>
             </label>
             <label class="manual-toggle"><input id="skipAi" type="checkbox"> Без ИИ</label>
+            <button id="openDecomposition" class="btn light" type="button" disabled>Разбить на подзадачи</button>
         </div>
     </section>
     <p id="connectionStatus" role="status">Подключаемся к серверу…</p>
@@ -98,8 +99,26 @@
     </div>
     <div id="taskDialogContent"></div>
 </dialog>
+<dialog id="decompositionDialog" aria-labelledby="decompositionTitle">
+    <div class="task-dialog-header">
+        <h2 id="decompositionTitle">Черновик подзадач</h2>
+        <button id="closeDecomposition" class="btn light" type="button">Закрыть ×</button>
+    </div>
+    <label class="draft-field">Описание большой задачи
+        <textarea id="decompositionSource" maxlength="3000" autofocus></textarea>
+    </label>
+    <button id="generateDecomposition" class="btn primary" type="button">Разбить с ИИ</button>
+    <p id="decompositionStatus" role="status" aria-live="polite"></p>
+    <fieldset id="decompositionEditor" aria-label="Редактирование подзадач">
+        <p id="decompositionNote" hidden>Черновик хранится в этой вкладке.</p>
+        <div id="decompositionList"></div>
+        <button id="appendSubtask" class="btn primary" type="button">Добавить подзадачу</button>
+    </fieldset>
+</dialog>
 <script src="/js/employee-options.js"></script>
 <script src="/js/task-work-status.js"></script>
+<script src="/js/decomposition-draft.js"></script>
+<script src="/js/task-decomposition.js"></script>
 <script src="script.js"></script>
 </body>
 </html>

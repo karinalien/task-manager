@@ -130,6 +130,9 @@
 .task-details p { margin: 6px 0 14px; }
 .task-details ul, .task-details ol { padding-left: 22px; }
 .task-source { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-original-request { margin: 0 0 8px; font-size: 12px; color: #79525c; }
+.task-original-request summary { cursor: pointer; }
+.task-original-request .task-source { margin: 6px 0 0; }
 .draft-field { display: block; margin: 16px 0; font-size: 12px; font-weight: 600; }
 .draft-field input, .draft-field textarea, .draft-field select {
     display: block;
@@ -146,6 +149,30 @@
 .draft-field textarea { min-height: 90px; resize: vertical; }
 #taskDialog .confirm-task { background: var(--accent); border-color: var(--accent); color: white; margin: 8px 0; }
 .task-edit-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+
+#decompositionDialog {
+    width: min(690px, calc(100% - 24px));
+    max-height: calc(100dvh - 24px);
+    padding: clamp(14px, 4vw, 24px);
+    overflow: auto;
+    border: 1px solid var(--rose-border);
+    border-radius: 12px;
+    background: var(--surface-white);
+    color: var(--text);
+}
+#decompositionDialog::backdrop { background: rgb(40 14 23 / 38%); }
+#decompositionDialog .task-dialog-header { flex-direction: row; align-items: center; margin-bottom: 12px; }
+#closeDecomposition { flex-shrink: 0; }
+#decompositionStatus, #decompositionNote { font-size: 12px; line-height: 1.55; }
+#decompositionStatus:empty { display: none; }
+#decompositionEditor { min-width: 0; border: 0; padding: 0; margin: 14px 0 0; }
+#decompositionList { display: grid; gap: 8px; margin-bottom: 10px; }
+#decompositionList:empty { display: none; }
+.subtask-editor { border: 1px solid var(--rose-border); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
+.subtask-editor summary { font-size: 13px; font-weight: 600; cursor: pointer; }
+.subtask-hours { max-width: 180px; }
+.subtask-groups { display: flex; flex-wrap: wrap; gap: 9px 14px; min-width: 0; margin: 0 0 12px; padding: 8px; border: 1px solid var(--rose-border); border-radius: 7px; font-size: 12px; }
+.subtask-groups label { display: inline-flex; align-items: center; gap: 4px; }
 
 .page-intro { color: #79525c; margin: -4px 0 24px; font-size: 13px; line-height: 1.7; }
 .projects-layout { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 24px; }
@@ -237,7 +264,6 @@
 .task-work-status { display: inline-flex; align-items: center; padding: 3px 7px; border: 0; border-radius: 4px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 100%; overflow-wrap: anywhere; }
 .task > .task-work-status { margin: 0 14px 8px; }
 #taskDialogContent > .task-work-status { margin-bottom: 8px; }
-.task-work-status--none { background: #f1f2f4; color: #596579; }
 .task-work-status--accepted { background: #eaf2ff; color: #1766c2; }
 .task-work-status--clarification { background: #fff4dc; color: #a86500; }
 .task-work-status--impossible { background: #fdebed; color: #c52e4b; }
