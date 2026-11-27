@@ -8,8 +8,16 @@ const { specification } = require("./helpers");
 class Element {
     constructor(tag = "div") { this.tag = tag; this.children = []; this.listeners = {}; this.dataset = {}; this.value = ""; this.disabled = false; }
     addEventListener(name, callback) { this.listeners[name] = callback; }
-    appendChild(child) { this.children.push(child); return child; }
-    replaceChildren() { this.children = []; }
+    appendChild(child) { child.parent = this; this.children.push(child); return child; }
+    replaceChildren(...children) { this.children = []; children.forEach((child) => this.appendChild(child)); }
+    remove() { this.parent.children = this.parent.children.filter((child) => child !== this); }
+    querySelector(tag) {
+        for (const child of this.children) {
+            const result = child.tag === tag ? child : child.querySelector(tag);
+            if (result) return result;
+        }
+        return null;
+    }
     setAttribute() {}
     focus() {}
     showModal() { this.open = true; }
@@ -21,11 +29,10 @@ const projectB = { ...projectA, id: "00000000-0000-4000-8000-000000000002", repo
 const draftKey = (id) => `task-manager.pending-create.v2:${id}`;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function browser(handler, draft = null, page = "index", search = "") {
+function browser(handler, draft = null, page = "index", search = "", session = new Map()) {
     const html = fs.readFileSync(require.resolve(`../${page}.html`), "utf8");
     const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], new Element()]));
     const storage = new Map(draft ? [[draftKey(draft.projectId), JSON.stringify(draft)]] : []);
-    const session = new Map();
     const calls = [];
     const intervals = [];
     const context = vm.createContext({
@@ -33,6 +40,7 @@ function browser(handler, draft = null, page = "index", search = "") {
         localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
         sessionStorage: { getItem: (key) => session.get(key) ?? null, setItem: (key, value) => session.set(key, value) },
         setInterval: (callback) => intervals.push(callback),
+        DecompositionDraft: require("../public/js/decomposition-draft"),
         TaskWorkStatuses: require("../public/js/task-work-status"), EmployeeOptions: require("../public/js/employee-options"), crypto: { randomUUID }, AbortSignal, URLSearchParams, location: { search },
         fetch: async (url, options) => {
             calls.push({ url, options });
@@ -43,10 +51,94 @@ function browser(handler, draft = null, page = "index", search = "") {
             return { ok: !result?.__status || result.__status < 400, status: result?.__status || 200, json: async () => result };
         }
     });
+    if (page === "index") vm.runInContext(fs.readFileSync(require.resolve("../public/js/task-decomposition.js"), "utf8"), context);
     vm.runInContext(fs.readFileSync(require.resolve(page === "index" ? "../script.js" : "../projects.js"), "utf8"), context);
     return { nodes, storage, session, context, calls, intervals };
 }
 const task = (patch = {}) => ({ ...specification, branch: "feat/example", projectId: projectA.id, repository: projectA.fullName, id: "task-1", column: "todo", state: "branch_created", branchUrl: "https://github.com/example/books/tree/feat/example", ...patch });
+
+test("decomposition editor preserves revised tasks and the source after a failed replacement", async () => {
+    let requests = 0;
+    const proposed = { title: "<img src=x onerror=alert(1)>", description: "Вывести результат", estimatedHours: 2, requiredGroups: ["backend"] };
+    const f = browser(async (url, options) => {
+        if (url !== "/api/ai/decompose") return { tasks: [] };
+        assert.equal(options.method, "POST");
+        assert.deepEqual(JSON.parse(options.body), { projectId: projectA.id, prompt: "Добавить CSV-выгрузку" });
+        if (++requests === 1) return { tasks: [proposed, { ...proposed, title: "Написать тесты", description: "Проверить формат CSV" }] };
+        return { __status: 502, error: { message: "ИИ временно недоступен" } };
+    });
+    await tick();
+    f.nodes.taskInput.value = "Добавить CSV-выгрузку";
+    f.nodes.openDecomposition.listeners.click();
+    assert.equal(f.nodes.decompositionDialog.open, true);
+    await f.nodes.generateDecomposition.listeners.click();
+    const list = f.nodes.decompositionList;
+    const first = list.children[0];
+    assert.equal(first.children[0].textContent, proposed.title + " · 2 ч");
+    const title = first.querySelector("input");
+    title.value = "Уточнённая подзадача";
+    title.listeners.input();
+    const description = first.querySelector("textarea");
+    description.value = "Добавить заголовок CSV";
+    description.listeners.input();
+    const hours = first.children[3].querySelector("input");
+    hours.value = "1.5";
+    hours.listeners.input();
+    const choices = first.children[4].children;
+    const backend = choices.find((label) => label.children[1]?.textContent === "Backend").querySelector("input");
+    backend.checked = false;
+    backend.listeners.change();
+    list.children[1].children.at(-1).listeners.click();
+    f.nodes.appendSubtask.listeners.click();
+    const newTitle = list.children[1].querySelector("input");
+    newTitle.value = "Ручная подзадача";
+    newTitle.listeners.input();
+    await f.nodes.generateDecomposition.listeners.click();
+    assert.equal(f.nodes.decompositionStatus.textContent, "ИИ временно недоступен");
+    f.nodes.closeDecomposition.listeners.click();
+    f.nodes.openDecomposition.listeners.click();
+    assert.deepEqual(list.children.map((item) => item.children[0].textContent), ["Уточнённая подзадача · 1.5 ч", "Ручная подзадача"]);
+    assert.equal(list.children[0].querySelector("textarea").value, "Добавить заголовок CSV");
+    assert.equal(list.children[0].children[4].children.find((label) => label.children[1]?.textContent === "Backend").querySelector("input").checked, false);
+    assert.equal(f.nodes.decompositionSource.value, "Добавить CSV-выгрузку");
+    assert.deepEqual(f.calls.filter((item) => item.options.method === "POST").map((item) => item.url), ["/api/ai/decompose", "/api/ai/decompose"]);
+});
+
+test("a malformed successful decomposition response preserves the editor and draft after reloading the tab", async () => {
+    const run = (session, search = "") => browser(async () => ({ tasks: [] }), null, "index", search, session);
+    const first = run(new Map());
+    await tick();
+    first.nodes.openDecomposition.listeners.click();
+    const source = first.nodes.decompositionSource;
+    source.value = "Описать проверку экспорта CSV";
+    source.listeners.input();
+    first.nodes.appendSubtask.listeners.click();
+    const row = first.nodes.decompositionList.children[0];
+    const title = row.querySelector("input");
+    title.value = "Проверить пустой файл";
+    title.listeners.input();
+    const description = row.querySelector("textarea");
+    description.value = "Проверить заголовки при пустой выборке";
+    description.listeners.input();
+    await first.nodes.generateDecomposition.listeners.click();
+    assert.match(first.nodes.decompositionStatus.textContent, /неполный или неверный список/);
+    assert.equal(first.nodes.decompositionList.children[0], row);
+    assert.equal(first.nodes.generateDecomposition.disabled, false);
+
+    const reloaded = run(first.session);
+    await tick();
+    reloaded.nodes.openDecomposition.listeners.click();
+    assert.equal(reloaded.nodes.decompositionSource.value, source.value);
+    const restored = reloaded.nodes.decompositionList.children[0];
+    assert.equal(restored.querySelector("input").value, title.value);
+    assert.equal(restored.querySelector("textarea").value, description.value);
+
+    const otherProject = run(first.session, `?projectId=${projectB.id}`);
+    await tick();
+    otherProject.nodes.openDecomposition.listeners.click();
+    assert.equal(otherProject.nodes.decompositionSource.value, "");
+    assert.equal(otherProject.nodes.decompositionList.children.length, 0);
+});
 
 test("browser guards double Enter and renders model output as text", async () => {
     let release;
@@ -484,13 +576,22 @@ test("interview validates a batch, retains its draft and browses submitted round
 
 test("interview review is separate and model errors retain retry and explicit manual confirmation", async () => {
     for (const state of ["draft_ready", "generation_error"]) {
-        const draft = task({ branch: null, branchUrl: null, grillingVersion: 1, grillingReady: state === "draft_ready", grillingRounds: 3, draftRevision: 7, state, questions: [] });
+        const input = state === "draft_ready" ? "Добавить вход по email и паролю" : "  форма входа ";
+        const draft = task({ input, branch: null, branchUrl: null, grillingVersion: 1, grillingReady: state === "draft_ready", grillingRounds: 3, draftRevision: 7, state, questions: [] });
         const f = browser(async (url) => url === "/api/employees" ? [] : { tasks: [draft] });
         await tick();
         f.nodes.todo.children[0].children[0].listeners.click();
         const nodes = descendants(f.nodes.taskDialogContent);
         assert.equal(nodes.filter((node) => node.className === "confirm-task").length, 1);
         assert.equal(nodes.some((node) => node.dataset.editor === "answers"), false);
+        assert.equal(nodes.some((node) => node.className === "interview-task"), false);
+        const original = nodes.find((node) => node.className === "task-original-request");
+        assert.equal(Boolean(original), state === "draft_ready");
+        if (original) {
+            assert.equal(original.tag, "details");
+            assert.equal(Boolean(original.open), false);
+            assert.equal(original.children[1].textContent, input);
+        }
         if (state === "draft_ready") assert.equal(f.nodes.taskDialogTitle.textContent, "Проверьте информацию о задаче");
         else assert.ok(nodes.some((node) => node.textContent === "Повторить с ИИ"));
     }
@@ -675,19 +776,19 @@ test("work mark editor requires a reason, retains failed input and resets commen
 });
 
 
-test("kanban hides an empty work mark but editor still permits clearing a mark", async () => {
+test("kanban and card details hide an empty work mark but the editor can clear it", async () => {
     let current = task();
     const f = browser(async (url) => url === "/api/employees" ? [] : { tasks: [current] });
     await tick();
     assert.equal(descendants(f.nodes.todo).some((node) => node.className?.includes("task-work-status")), false);
     current = task({ workStatus: "none" });
     await vm.runInContext("refreshBoard()", f.context);
-    assert.equal(descendants(f.nodes.todo).some((node) => node.textContent === "Без отметки"), false);
+    assert.equal(descendants(f.nodes.todo).some((node) => node.className?.includes("task-work-status")), false);
     f.nodes.todo.children[0].children[0].listeners.click();
-    assert.ok(descendants(f.nodes.taskDialogContent).some((node) => node.textContent === "Без отметки"));
+    assert.equal(descendants(f.nodes.taskDialogContent).some((node) => node.className?.includes("task-work-status")), false);
     descendants(f.nodes.taskDialogContent).find((node) => node.textContent === "Редактировать карточку").listeners.click();
     const select = descendants(f.nodes.taskDialogContent).find((node) => node.tag === "label" && node.textContent === "Отметка исполнителя").children[0];
-    assert.ok(select.children.some((option) => option.value === "none" && option.textContent === "Без отметки"));
+    assert.ok(select.children.some((option) => option.value === "none" && option.textContent === "Не выбрана"));
 });
 
 

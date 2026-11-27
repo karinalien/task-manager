@@ -1,7 +1,7 @@
 /* Метка исполнителя независима от колонки канбана и технического состояния GitHub/ИИ. */
 (function (root) {
     const statuses = {
-        none: { label: "Без отметки", comment: false },
+        none: { label: "Не выбрана", comment: false },
         accepted: { label: "Принято", comment: false },
         clarification: { label: "На уточнении", comment: true },
         impossible: { label: "Приостановлено", comment: true },
